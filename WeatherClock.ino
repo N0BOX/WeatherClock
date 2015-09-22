@@ -1,3 +1,5 @@
+#include <Adafruit_GPS.h>
+
 /* ---------------------------------
    ---------------------------------
     Included Libraries
@@ -13,6 +15,8 @@
 
 #include <RTClib.h>              // Real-time clock library
 #include <RTC_DS3231.h>          // Real-time clock library for the DS3231, which is used in the Chronodot RTC
+
+#include <Adafruit_GPS.h>        // Adafruit GPS library for Ultimate GPS Breakout v3 (PA6H)
 
 #include <Encoder.h>             // Rotary encoder library by Paul Stoffregen
 
@@ -42,6 +46,18 @@
 
 // Use a smaller, easier to recognize macro for the 1Hz square wave frequency of the Chronodot
 #define SQW_FREQ DS3231_SQW_FREQ_1
+
+// Define a HardwareSerial variable that can be passed to the GPS lib
+HardwareSerial sGPS = Serial1;
+Adafruit_GPS GPS(&sGPS);
+
+// Set GPSECHO to 'false' to turn off echoing the GPS data to the Serial console
+// Set to 'true' if you want to debug and listen to the raw GPS sentences. 
+#define GPSECHO  true
+
+// this keeps track of whether we're using the interrupt
+// off by default!
+boolean usingInterrupt = false;
 
 // initialize the VFD library with the names of the interface pins
 SPI_VFD vfd(PinVFDSPI_MOSI, PinVFDSPI_SCK, PinVFDSPI_CS);
@@ -308,6 +324,34 @@ void isrEncoderSelect01()
 #endif
 }
 
+// Interrupt is called once a millisecond, looks for any new GPS data, and stores it
+SIGNAL(TIMER0_COMPA_vect) {
+  char c = GPS.read();
+  // if you want to debug, this is a good time to do it!
+#ifdef UDR0
+  if (GPSECHO)
+    if (c) UDR0 = c;  
+    // writing direct to UDR0 is much much faster than Serial.print 
+    // but only one character can be written at a time. 
+#endif
+}
+
+void useInterrupt(boolean v) {
+  if (v) {
+    // Timer0 is already used for millis() - we'll just interrupt somewhere
+    // in the middle and call the "Compare A" function above
+    OCR0A = 0xAF;
+    TIMSK0 |= _BV(OCIE0A);
+    usingInterrupt = true;
+  } else {
+    // do not call the interrupt function COMPA anymore
+    TIMSK0 &= ~_BV(OCIE0A);
+    usingInterrupt = false;
+  }
+}
+
+uint32_t timer = millis();
+
 
 /* ---------------------------------------
    ---------------------------------------
@@ -326,11 +370,37 @@ void setup() {
   delay(3000);
 
   Serial.begin(115200);
+  while (!Serial) {}
   
   vfd.setCursor(0, 1);
   vfd.createChar(CHAR_DEGREEF, charDegreeF);
   vfd.createChar(CHAR_RELHUM, charRH);
   vfd.createChar(CHAR_HG,     charHg);
+
+  /* -------------------------------
+     Ultimate GPS (PA6H) Setup
+     ------------------------------- */
+
+  // 9600 NMEA is the default baud rate for Adafruit MTK GPS's- some use 4800
+  GPS.begin(9600);
+
+  // uncomment this line to turn on RMC (recommended minimum) and GGA (fix data) including altitude
+  GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCGGA);
+  // uncomment this line to turn on only the "minimum recommended" data
+  //GPS.sendCommand(PMTK_SET_NMEA_OUTPUT_RMCONLY);
+  // For parsing data, we don't suggest using anything but either RMC only or RMC+GGA since
+  // the parser doesn't care about other sentences at this time
+  
+  // Set the update rate
+  GPS.sendCommand(PMTK_SET_NMEA_UPDATE_1HZ);   // 1 Hz update rate
+  // For the parsing code to work nicely and have time to sort thru the data, and
+  // print it out we don't suggest using anything higher than 1 Hz
+
+  // the nice thing about this code is you can have a timer0 interrupt go off
+  // every 1 millisecond, and read data from the GPS for you. that makes the
+  // loop code a heck of a lot easier!
+  useInterrupt(true);
+
 
   /* -------------------------------
      HTU21DF Setup
@@ -379,6 +449,7 @@ void setup() {
   {
 #ifdef DEBUG
     Serial.println("RTC is running.");
+    Serial.printf("Compiled date: %s\r\nCompiled time: %s\r\n", __DATE__, __TIME__);
 #endif
   }
 
@@ -409,6 +480,9 @@ void setup() {
   attachInterrupt(PinEnc01_Sel, isrEncoderSelect01, FALLING); // Attach interrupt to Rotary Encoder 01's select button
 
   vfd.clear();
+
+  // Ask for firmware version
+  sGPS.println(PMTK_Q_RELEASE);
 }
 
 
