@@ -13,8 +13,8 @@
 #include <Adafruit_Sensor.h>     // Unified sensor library by Adafruit
 #include <Adafruit_BMP085_U.h>   // BMP180 barometric pressure sensor library by Adafruit
 
-#include <RTClib.h>              // Real-time clock library
-#include <RTC_DS3231.h>          // Real-time clock library for the DS3231, which is used in the Chronodot RTC
+#include <DS1307RTC.h>           // Real-time clock library compatible with DS3231 RTC
+#include <Time.h>                // Time library
 
 #include <Adafruit_GPS.h>        // Adafruit GPS library for Ultimate GPS Breakout v3 (PA6H)
 
@@ -47,6 +47,9 @@
 // Use a smaller, easier to recognize macro for the 1Hz square wave frequency of the Chronodot
 #define SQW_FREQ DS3231_SQW_FREQ_1
 
+// Define Real-time Clock object
+DS1307RTC RTC = DS1307RTC();
+
 // Define a HardwareSerial variable that can be passed to the GPS lib
 HardwareSerial sGPS = Serial1;
 Adafruit_GPS GPS(&sGPS);
@@ -68,9 +71,6 @@ Adafruit_HTU21DF htu = Adafruit_HTU21DF();
 // initialize BMP180  barometric sensor (I2C)
 Adafruit_BMP085_Unified bmp = Adafruit_BMP085_Unified(10085);
 
-// initialize the Chronodot RTC library (I2C)
-RTC_DS3231 RTC;
-
 // initialize Rotary Encoder object with its pin names and set the related debounce timer vars
 Encoder myEnc(PinEnc01_1, PinEnc01_2);
 bool bEncoderChanged01;                  // whether or not the encoder's position has changed
@@ -84,6 +84,10 @@ uint16_t iDebounceTime    = 750;         // number of microseconds to wait for t
 uint16_t iDebounceSelTime = 750;         // number of microseconds to wait for the rotary encoder select switch to become stable
 uint16_t iDebounceUnselTime = 750;       // number of microseconds to wait for the rotary encoder select switch to become stable
 
+const char *monthName[12] = {
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
+};
 
 byte charDegree[8] = {    // This degree symbol is drawn on the right edge of the 5x7 matrix, instead of the left
 	B00111,
@@ -268,31 +272,33 @@ void UpdateDisplay_BMP()
 void UpdateDisplay_Time()
 {
   vfd.display();  
-  DateTime now = RTC.now();
-
-  // Print Time and Date
-  vfd.setCursor(0, 0);
-  if (now.hour() < 10)
-    vfd.print('0');
-  vfd.print(now.hour(), DEC);
-  vfd.print(':');
-  if (now.minute() < 10)
-    vfd.print('0');
-  vfd.print(now.minute(), DEC);
-  vfd.print(':');
-  if (now.second() < 10)
-    vfd.print('0');
-  vfd.print(now.second(), DEC);
-  vfd.print("  ");
-  if (now.month() < 10)
-    vfd.print('0');
-  vfd.print(now.month(), DEC);
-  vfd.print('/');
-  if (now.day() < 10)
-    vfd.print('0');
-  vfd.print(now.day(), DEC);
-  vfd.print('/');
-  vfd.print(now.year(), DEC);
+  tmElements_t tm;
+  if (RTC.read(tm))
+  {
+    // Print Time and Date
+    vfd.setCursor(0, 0);
+    if (tm.Hour < 10)
+      vfd.print('0');
+    vfd.print(tm.Hour);
+    vfd.print(':');
+    if (tm.Minute < 10)
+      vfd.print('0');
+    vfd.print(tm.Minute);
+    vfd.print(':');
+    if (tm.Second < 10)
+      vfd.print('0');
+    vfd.print(tm.Second);
+    vfd.print("  ");
+    if (tm.Month < 10)
+      vfd.print('0');
+    vfd.print(tm.Month);
+    vfd.print('/');
+    if (tm.Day < 10)
+      vfd.print('0');
+    vfd.print(tm.Day);
+    vfd.print('/');
+    vfd.print(tmYearToCalendar(tm.Year));
+  }
 }
 
 /*
@@ -325,6 +331,34 @@ void isrEncoderSelect01()
 }
 
 uint32_t timer = millis();
+
+bool getTime(tmElements_t &tm, const char *str)
+{
+  int Hour, Min, Sec;
+
+  if (sscanf(str, "%d:%d:%d", &Hour, &Min, &Sec) != 3) return false;
+  tm.Hour = Hour;
+  tm.Minute = Min;
+  tm.Second = Sec;
+  return true;
+}
+
+bool getDate(tmElements_t &tm, const char *str)
+{
+  char Month[12];
+  int Day, Year;
+  uint8_t monthIndex;
+
+  if (sscanf(str, "%s %d %d", Month, &Day, &Year) != 3) return false;
+  for (monthIndex = 0; monthIndex < 12; monthIndex++) {
+    if (strcmp(Month, monthName[monthIndex]) == 0) break;
+  }
+  if (monthIndex >= 12) return false;
+  tm.Day = Day;
+  tm.Month = monthIndex + 1;
+  tm.Year = CalendarYrToTm(Year);
+  return true;
+}
 
 
 /* ---------------------------------------
@@ -373,7 +407,7 @@ void setup() {
   // the nice thing about this code is you can have a timer0 interrupt go off
   // every 1 millisecond, and read data from the GPS for you. that makes the
   // loop code a heck of a lot easier!
-  useInterrupt(true);
+  // useInterrupt(true);
 
 
   /* -------------------------------
@@ -413,28 +447,28 @@ void setup() {
      Chronodot RTC Setup
      ------------------------------- */
 
-  RTC.begin();
-  if (!RTC.isrunning()) {
-    Serial.println("RTC is NOT running!");
-    Serial.println("Setting DS3231 RTC to compiler time.");
-    RTC.adjust(DateTime(__DATE__, __TIME__));
-  }
-  else
+
+
+  tmElements_t tm;
+  if (RTC.read(tm))
   {
+//    RTC.SQWEnable(true);
+//    RTC.SQWFrequency( SQW_FREQ );
 #ifdef DEBUG
     Serial.println("RTC is running.");
     Serial.printf("Compiled date: %s\r\nCompiled time: %s\r\n", __DATE__, __TIME__);
 #endif
   }
-
-  DateTime now = RTC.now();
-  DateTime compiled = DateTime(__DATE__, __TIME__);
-  if (now.unixtime() < compiled.unixtime()) {
-    Serial.println("RTC is older than compile time!  Updating...");
-    RTC.adjust(DateTime(__DATE__, __TIME__));
-  } //*/
-  RTC.SQWEnable(true);
-  RTC.SQWFrequency( SQW_FREQ );
+  else
+  {
+    tmElements_t compiled;
+    getDate(compiled, __DATE__);
+    getTime(compiled, __TIME__);
+    if (makeTime(tm) < makeTime(compiled)) {
+      Serial.println("RTC is older than compile time!  Updating...");
+      RTC.write(compiled);
+    } //*/
+  }
 
   pinMode(PinInt01, INPUT);
   digitalWrite(PinInt01, HIGH);
@@ -575,7 +609,7 @@ void loop() {
     }
 
     // Take a temperature reading from the Chronodot, too, while we're at it... we
-    // might as well use it's temp readings for our average temperature, too!
+    // might as well use its temp readings for our average temperature, too!
     temp = RTC.getTempAsFloat();
     push(temp, ar_Temps3, 10, -273.15);
 
